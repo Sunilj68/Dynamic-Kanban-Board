@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dynamic Kanban Board</title>
+
+  <!-- ========================= CSS START ========================= -->
+  <style>
+    /* Basic Reset */
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      background: #0389ffc0;
+    }
+    h1 {
+      text-align: center;
+    }
+
+    /* Form */
+    #task-form {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+      justify-content: center;
+    }
+    #task-form input, #task-form textarea {
+      padding: 8px;
+      font-size: 1rem;
+      border: 1px solid #001780;
+      border-radius: 4px;
+    }
+    #task-form input {
+      width: 200px;
+    }
+    #task-form textarea {
+      width: 300px;
+      resize: vertical;
+    }
+    #task-form button {
+      padding: 8px 16px;
+      font-size: 1rem;
+      background-color: #0d5cb0;
+      border: none;
+      color: white;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    #task-form button:hover {
+      background-color: #0880c6;
+    }
+
+    /* Kanban Board */
+    #board {
+      display: flex;
+      gap: 20px;
+      justify-content: center;
+    }
+    .column {
+      background: rgb(255, 166, 237);
+      border-radius: 6px;
+      padding: 10px;
+      width: 300px;
+      min-height: 400px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+      display: flex;
+      flex-direction: column;
+    }
+    .column h2 {
+      text-align: center;
+      margin-bottom: 10px;
+    }
+    .task-list {
+      flex-grow: 1;
+      min-height: 300px;
+    }
+    .task {
+      background: #e3e9f3;
+      border-radius: 4px;
+      padding: 10px;
+      margin-bottom: 10px;
+      cursor: grab;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .task.dragging {
+      opacity: 0.5;
+      cursor: grabbing;
+    }
+    .task-title {
+      font-weight: bold;
+      margin-bottom: 5px;
+    }
+    .task-desc {
+      font-size: 0.9rem;
+      color: #555;
+    }
+
+    /* Drag & Drop Highlight */
+    .task-list.drag-over {
+      background-color: #d0e6ff;
+      border: 2px dashed #007bff;
+    }
+  </style>
+  <!-- ========================= CSS END ========================= -->
+
+</head>
+<body>
+
+  <!-- ========================= HTML START ========================= -->
+
+  <h1>Dynamic Kanban Board</h1>
+
+  <form id="task-form" aria-label="Create new task">
+    <input type="text" id="task-title" placeholder="Task Title" required aria-required="true" />
+    <textarea id="task-desc" placeholder="Task Description" rows="1"></textarea>
+    <button type="submit">Add Task</button>
+  </form>
+
+  <div id="board" aria-label="Kanban Board">
+    <section class="column" data-status="todo" aria-labelledby="todo-title">
+      <h2 id="todo-title">To Do</h2>
+      <div class="task-list" id="todo-list" aria-describedby="todo-desc" aria-dropeffect="move"></div>
+    </section>
+    <section class="column" data-status="inprogress" aria-labelledby="inprogress-title">
+      <h2 id="inprogress-title">In Progress</h2>
+      <div class="task-list" id="inprogress-list" aria-describedby="inprogress-desc" aria-dropeffect="move"></div>
+    </section>
+    <section class="column" data-status="done" aria-labelledby="done-title">
+      <h2 id="done-title">Done</h2>
+      <div class="task-list" id="done-list" aria-describedby="done-desc" aria-dropeffect="move"></div>
+    </section>
+  </div>
+
+  <!-- ========================= HTML END ========================= -->
+
+  <!-- ========================= JAVASCRIPT START ========================= -->
+  <script>
+    /**
+     * Utility Module
+     */
+    const Utils = (() => {
+      function createElement(tag, attrs = {}, ...children) {
+        const el = document.createElement(tag);
+        for (const [key, value] of Object.entries(attrs)) {
+          if (key === 'className') {
+            el.className = value;
+          } else if (key.startsWith('data-')) {
+            el.setAttribute(key, value);
+          } else if (key === 'htmlFor') {
+            el.htmlFor = value;
+          } else {
+            el.setAttribute(key, value);
+          }
+        }
+        children.forEach(child => {
+          if (typeof child === 'string') {
+            el.appendChild(document.createTextNode(child));
+          } else if (child instanceof Node) {
+            el.appendChild(child);
+          }
+        });
+        return el;
+      }
+      return { createElement };
+    })();
+
+    /**
+     * Storage Module
+     */
+    const Storage = (() => {
+      const STORAGE_KEY = 'kanban-tasks';
+      function saveTasks(tasks) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
+      }
+      function loadTasks() {
+        const data = localStorage.getItem(STORAGE_KEY);
+        if (!data) return [];
+        try {
+          return JSON.parse(data);
+        } catch {
+          return [];
+        }
+      }
+      return { saveTasks, loadTasks };
+    })();
+
+    /**
+     * DragDrop Module
+     */
+    const DragDrop = (() => {
+      let draggedTaskId = null;
+      function init(onDropCallback) {
+        const taskLists = document.querySelectorAll('.task-list');
+        taskLists.forEach(list => {
+          list.addEventListener('dragover', e => {
+            e.preventDefault();
+            list.classList.add('drag-over');
+          });
+          list.addEventListener('dragleave', () => {
+            list.classList.remove('drag-over');
+          });
+          list.addEventListener('drop', e => {
+            e.preventDefault();
+            list.classList.remove('drag-over');
+            if (draggedTaskId) {
+              const newStatus = list.closest('.column').dataset.status;
+              onDropCallback(draggedTaskId, newStatus);
+              draggedTaskId = null;
+            }
+          });
+        });
+      }
+      function makeDraggable(taskEl) {
+        taskEl.setAttribute('draggable', 'true');
+        taskEl.addEventListener('dragstart', e => {
+          draggedTaskId = taskEl.dataset.id;
+          taskEl.classList.add('dragging');
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', draggedTaskId);
+        });
+        taskEl.addEventListener('dragend', () => {
+          draggedTaskId = null;
+          taskEl.classList.remove('dragging');
+        });
+      }
+      return { init, makeDraggable };
+    })();
+
+    /**
+     * Renderer Module
+     */
+    const Renderer = (() => {
+      const columns = {
+        todo: document.getElementById('todo-list'),
+        inprogress: document.getElementById('inprogress-list'),
+        done: document.getElementById('done-list'),
+      };
+      function clearBoard() {
+        Object.values(columns).forEach(col => (col.innerHTML = ''));
+      }
+      function renderTasks(tasks) {
+        clearBoard();
+        tasks.forEach(task => {
+          const taskEl = createTaskElement(task);
+          columns[task.status].appendChild(taskEl);
+        });
+      }
+      function createTaskElement(task) {
+        const taskEl = Utils.createElement(
+          'div',
+          { className: 'task', 'data-id': task.id, tabindex: 0, role: 'listitem', 'aria-label': `Task: ${task.title}` },
+          Utils.createElement('div', { className: 'task-title' }, task.title),
+          Utils.createElement('div', { className: 'task-desc' }, task.description || '')
+        );
+        DragDrop.makeDraggable(taskEl);
+        return taskEl;
+      }
+      return { renderTasks };
+    })();
+
+    /**
+     * App Module
+     */
+    const App = (() => {
+      let tasks = [];
+      const form = document.getElementById('task-form');
+      const inputTitle = document.getElementById('task-title');
+      const inputDesc = document.getElementById('task-desc');
+
+      function generateId() {
+        return 'task-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+      }
+      function addTask(title, description) {
+        const newTask = { id: generateId(), title, description, status: 'todo' };
+        tasks.push(newTask);
+        Storage.saveTasks(tasks);
+        Renderer.renderTasks(tasks);
+      }
+      function updateTaskStatus(taskId, newStatus) {
+        const task = tasks.find(t => t.id === taskId);
+        if (task && task.status !== newStatus) {
+          task.status = newStatus;
+          Storage.saveTasks(tasks);
+          Renderer.renderTasks(tasks);
+        }
+      }
+      function initEventListeners() {
+        form.addEventListener('submit', e => {
+          e.preventDefault();
+          const title = inputTitle.value.trim();
+          const description = inputDesc.value.trim();
+          if (!title) return;
+          addTask(title, description);
+          form.reset();
+          inputTitle.focus();
+        });
+        DragDrop.init(updateTaskStatus);
+      }
+      function init() {
+        tasks = Storage.loadTasks();
+        Renderer.renderTasks(tasks);
+        initEventListeners();
+      }
+      return { init };
+    })();
+
+    document.addEventListener('DOMContentLoaded', () => {
+      App.init();
+    });
+  </script>
+  <!-- ========================= JAVASCRIPT END ========================= -->
+
+</body>
+</html>
